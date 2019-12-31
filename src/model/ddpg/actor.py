@@ -24,9 +24,9 @@ class ActorNetwork(object):
 
         Args:
             sess: a tensorflow session
-            state_dim: a list specifies shape
-            action_dim: a list specified action shape
-            action_bound: whether to normalize action in the end
+            state_dim: a list specifies shape. In this case (number of stocks+1<cash>, windows size)
+            action_dim: a list specified action shape (number of stocks + 1 cash)
+            action_bound: whether to normalize action in the end (should be 1)
             learning_rate: learning rate
             tau: target network update parameter
             batch_size: use for normalization

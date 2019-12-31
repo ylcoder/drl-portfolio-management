@@ -6,11 +6,13 @@ from __future__ import print_function
 
 import csv
 import datetime
+import os
+
 import numpy as np
 import h5py
 
-start_date = '2012-08-13'
-end_date = '2017-08-11'
+start_date = '2004-10-08'
+end_date = '2019-11-08'
 date_format = '%Y-%m-%d'
 start_datetime = datetime.datetime.strptime(start_date, date_format)
 end_datetime = datetime.datetime.strptime(end_date, date_format)
@@ -112,6 +114,67 @@ def create_dataset(filepath):
             current_date_index += 1
     write_to_h5py(history, abbreviation)
 
+def create_dataset_from_dir(filedir, dest_path, tickers=['FXI', 'EWZ', 'GSPC'],
+                            start='2004-10-08',
+                            end=None):
+    """ create the raw dataset from from file directory with a list csv files. The data is Open,High,Low,Close,
+    adjusted_close, Volume. in this case, ignore the adjusted_close
+
+    Args:
+        filedir: path of all csv files, the file name is the ticker.csv
+        dest_path: write the data to the file
+        tickers: a list of ticker we get the data
+        start: the starting date we take the data
+        end: end date of the price
+
+    Returns:
+        history: numpy array of size (N, number_day, 5),
+        abbreviation: a list of company abbreviation where index map to name
+
+    """
+    start_date_1=datetime.datetime.strptime(start, date_format)
+    if end is None:
+        end_datetime_1=datetime.datetime.now() - datetime.timedelta(days=1)
+    else:
+        end_datetime_1=datetime.datetime.strptime(end, date_format)
+
+    days = (end_datetime_1 - start_date_1).days + 1
+    # history = np.empty(shape=(len(tickers), days, 5), dtype=np.float)
+    # print("data shape={}".format(history.shape))
+    abbreviation = []
+    num_days = 0
+    hist = []
+    for t in tickers:
+        current_company_index = -1
+        abbreviation.append(t)
+        d = []
+        hist.append(d)
+        with open(os.path.join(filedir, t + ".csv"), 'r') as csvfile:
+            print("reading {}".format(t))
+            reader = csv.reader(csvfile, delimiter=',')
+            current_company_index += 1
+            next(reader)  #skip the header
+            current_date_index = 0
+            previous_day_data = None
+            print("company index={}".format(current_company_index))
+            for row in reader:
+                date = datetime.datetime.strptime(row[0], date_format)
+                if (date - start_date_1).days < 0 or (date - end_datetime_1).days > 0:
+                    continue
+                try:
+                    data = np.array(list(map(float, row[1:5] + row[6:7])))
+                except:
+                    data = previous_day_data.copy() #this will fail if first data is missing
+
+                print(current_date_index, data)
+                num_days = current_date_index
+                d.append(data)
+                previous_day_data = data
+                current_date_index += 1
+    history = np.array(hist)
+    print("shape={}".format(history.shape))
+    write_to_h5py(history, abbreviation, filepath=dest_path)
+
 
 def write_to_h5py(history, abbreviation, filepath='datasets/stocks_history_2.h5'):
     """ Write a numpy array history and a list of string to h5py
@@ -165,7 +228,8 @@ def read_stock_history(filepath='datasets/stocks_history.h5'):
     with h5py.File(filepath, 'r') as f:
         history = f['history'][:]
         abbreviation = f['abbreviation'][:].tolist()
-        abbreviation = [abbr.decode('utf-8') for abbr in abbreviation]
+        if type(abbreviation[0]) != type(''):
+            abbreviation = [abbr.decode('utf-8') for abbr in abbreviation]
     return history, abbreviation
 
 

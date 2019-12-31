@@ -96,7 +96,7 @@ class DDPG(BaseModel):
         # main training loop
         for i in range(num_episode):
             if verbose and debug:
-                print("Episode: " + str(i) + " Replay Buffer " + str(self.buffer.count()))
+                print("Episode: " + str(i) + " Replay Buffer " + str(self.buffer.size()))
 
             previous_observation = self.env.reset()
             if self.obs_normalizer:
@@ -106,6 +106,7 @@ class DDPG(BaseModel):
             ep_ave_max_q = 0
             # keeps sampling until done
             for j in range(self.config['max step']):
+                #sample/generate the action from actor network
                 action = self.actor.predict(np.expand_dims(previous_observation, axis=0)).squeeze(
                     axis=0) + self.actor_noise()
 
@@ -122,9 +123,15 @@ class DDPG(BaseModel):
                 # add to buffer
                 self.buffer.add(previous_observation, action, reward, done, observation)
 
+                if debug:
+                    print('buffer size={}'.format(self.buffer.size()))
+
                 if self.buffer.size() >= batch_size:
                     # batch update
                     s_batch, a_batch, r_batch, t_batch, s2_batch = self.buffer.sample_batch(batch_size)
+                    if debug:
+                        print('s_batch, a_batch, r_batch, t_batch, s2_batch', s_batch, a_batch, r_batch, t_batch, s2_batch)
+
                     # Calculate targets
                     target_q = self.critic.predict_target(s2_batch, self.actor.predict_target(s2_batch))
 

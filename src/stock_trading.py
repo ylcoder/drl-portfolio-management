@@ -18,34 +18,30 @@ import tensorflow as tf
 import argparse
 import pprint
 
-DEBUG = False
+DEBUG = True
 
+def get_batch_norm_str(use_batch_norm):
+    return 'batch_norm' if use_batch_norm else 'no_batch_norm'
 
 def get_model_path(window_length, predictor_type, use_batch_norm):
-    if use_batch_norm:
-        batch_norm_str = 'batch_norm'
-    else:
-        batch_norm_str = 'no_batch_norm'
-    return 'weights/stock/{}/window_{}/{}/checkpoint.ckpt'.format(predictor_type, window_length, batch_norm_str)
+    return 'weights/stock/{}/window_{}/{}/checkpoint.ckpt'.format(predictor_type, window_length,
+                                                                  get_batch_norm_str(use_batch_norm))
 
 
 def get_result_path(window_length, predictor_type, use_batch_norm):
-    if use_batch_norm:
-        batch_norm_str = 'batch_norm'
-    else:
-        batch_norm_str = 'no_batch_norm'
-    return 'results/stock/{}/window_{}/{}/'.format(predictor_type, window_length, batch_norm_str)
+    return 'results/stock/{}/window_{}/{}/'.format(predictor_type, window_length,
+                                                   get_batch_norm_str(use_batch_norm))
 
 
 def get_variable_scope(window_length, predictor_type, use_batch_norm):
-    if use_batch_norm:
-        batch_norm_str = 'batch_norm'
-    else:
-        batch_norm_str = 'no_batch_norm'
-    return '{}_window_{}_{}'.format(predictor_type, window_length, batch_norm_str)
+    return '{}_window_{}_{}'.format(predictor_type, window_length,
+                                    get_batch_norm_str(use_batch_norm))
 
 
 def stock_predictor(inputs, predictor_type, use_batch_norm):
+    """This the deep neuro network for policy gradient
+    TODO: change this to use keras in TF
+    """
     window_length = inputs.get_shape()[2]
     assert predictor_type in ['cnn', 'lstm'], 'type must be either cnn or lstm'
     if predictor_type == 'cnn':
@@ -65,7 +61,7 @@ def stock_predictor(inputs, predictor_type, use_batch_norm):
     elif predictor_type == 'lstm':
         num_stocks = inputs.get_shape()[1]
         hidden_dim = 32
-        net = tflearn.reshape(inputs, new_shape=[-1, window_length, 1])
+        net = tflearn.reshape(inputs, new_shape=[-1, window_length, 4]) #changed 1 to 4 for default normalizer
         if DEBUG:
             print('Reshaped input:', net.shape)
         net = tflearn.lstm(net, hidden_dim)
@@ -94,10 +90,11 @@ class StockActor(ActorNetwork):
         """
         self.s_dim: a list specifies shape
         """
-        nb_classes, window_length = self.s_dim
+        print("####", self.s_dim)
+        nb_classes, window_length, features = self.s_dim
         assert nb_classes == self.a_dim[0]
         assert window_length > 2, 'This architecture only support window length larger than 2.'
-        inputs = tflearn.input_data(shape=[None] + self.s_dim + [1], name='input')
+        inputs = tflearn.input_data(shape=[None] + self.s_dim, name='input')
 
         net = stock_predictor(inputs, self.predictor_type, self.use_batch_norm)
 
@@ -128,6 +125,7 @@ class StockActor(ActorNetwork):
 
     def predict(self, inputs):
         window_length = self.s_dim[1]
+        # print("inputs' shape={}".format(inputs.shape))
         inputs = inputs[:, :, -window_length:, :]
         return self.sess.run(self.scaled_out, feed_dict={
             self.inputs: inputs
@@ -149,7 +147,7 @@ class StockCritic(CriticNetwork):
         CriticNetwork.__init__(self, sess, state_dim, action_dim, learning_rate, tau, num_actor_vars)
 
     def create_critic_network(self):
-        inputs = tflearn.input_data(shape=[None] + self.s_dim + [1])
+        inputs = tflearn.input_data(shape=[None] + self.s_dim)
         action = tflearn.input_data(shape=[None] + self.a_dim)
 
         net = stock_predictor(inputs, self.predictor_type, self.use_batch_norm)
@@ -213,19 +211,54 @@ def obs_normalizer(observation):
     Returns: normalized
 
     """
+    # print("data before normalization={}".format(observation))
     if isinstance(observation, tuple):
         observation = observation[0]
+    # print("data in first element used={}".format(observation))
     # directly use close/open ratio as feature
+    # print("shape before normalization={}".format(observation.shape))
     observation = observation[:, :, 3:4] / observation[:, :, 0:1]
     observation = normalize(observation)
+    # print("shape after normalization={}".format(observation.shape))
     return observation
 
+def default_normalizer(observation):
+    """ Preprocess observation obtained by environment
+
+    Args:
+        observation: (nb_classes, window_length, num_features) or with info
+
+    Returns: make sure the data is numpy array, nothign else
+
+    """
+    # print("data before normalization={}".format(observation))
+    if isinstance(observation, tuple):
+        observation = observation[0]
+    # print("data in first element used={}".format(observation))
+    # directly use close/open ratio as feature
+    # print("shape before normalization={}".format(observation.shape))
+    observation = observation / observation[:, 0:1, :]
+    # observation = normalize(observation)
+    # print("data in first element used={}".format(observation))
+    # print("shape after normalization={}".format(observation.shape))
+    return observation
 
 def test_model(env, model):
     observation, info = env.reset()
+    print("first observation={}".format(observation))
+    #TODO dimensions not matched, reson: model is using the normalization function which only take the close/open
+    # as the feature and ignore others so the dimension is 1 feature instaed of 4
+    # observation = observation[:, :, 3] / observation[:, :, 0]
+    # print("observation after normalization=", observation)
+    # observation = np.expand_dims(observation, axis=-1)
+    # print("observation after dims expand=", observation)
+
     done = False
+    step = 1
     while not done:
         action = model.predict_single(observation)
+        print("action at step {}={}".format(step, action))
+        step += 1
         observation, _, done, _ = env.step(action)
     env.render()
 
@@ -240,6 +273,32 @@ def test_model_multiple(env, models):
         actions = np.array(actions)
         observation, _, done, info = env.step(actions)
     env.render()
+    env.plot()
+
+def _load_model(norm_func=None):
+    ddpg_model = DDPG(env, sess, actor, critic, actor_noise, obs_normalizer=norm_func,
+                      config_file='config/stock.json', model_save_path=model_save_path,
+                      summary_path=summary_path)
+    ddpg_model.initialize(load_weights=True)
+    return ddpg_model
+
+def predict_next_day(env, sess, actor, critic, actor_noise, norm_func=None):
+    ddpg_model = DDPG(env, sess, actor, critic, actor_noise, obs_normalizer=norm_func,
+                      config_file='config/stock.json', model_save_path=model_save_path,
+                      summary_path=summary_path)
+    ddpg_model.initialize(load_weights=True)
+    env = PortfolioEnv(last_history, target_stocks, steps=0, window_length=window_length, start_idx=0, trading_cost=0.0, sample_start_date='2019-12-26')
+    print("data=", last_history)
+    observation = env.get_last_observation()
+    # print("observation before normalization={}, shape={}".format(observation, observation.shape))
+    # observation = observation[:, :, 3] / observation[:, :, 0]
+    # print("observation after normalization={}, shape={}".format(observation, observation.shape))
+    # observation = np.expand_dims(observation, axis=-1)
+    # print("observation after dims expand={}, shape={}".format(observation, observation.shape))
+    action = ddpg_model.predict_single(observation)
+    # action = np.squeeze(action, axis=0)
+    # observation, _, done, _ = env.step(action)
+    print("action=", action)
 
 
 if __name__ == '__main__':
@@ -250,6 +309,9 @@ if __name__ == '__main__':
     parser.add_argument('--predictor_type', '-p', help='cnn or lstm predictor', required=True)
     parser.add_argument('--window_length', '-w', help='observation window length', required=True)
     parser.add_argument('--batch_norm', '-b', help='whether to use batch normalization', required=True)
+    parser.add_argument('--train', '-t', help='whether to train or to predict', required=True)
+    parser.add_argument('--test', '-T', help='whether to test the saved model', required=False)
+    parser.add_argument('--obs', '-o', help='whether to use close open ratio normalizer', required=False)
 
     args = vars(parser.parse_args())
 
@@ -260,24 +322,63 @@ if __name__ == '__main__':
     else:
         DEBUG = False
 
-    history, abbreviation = read_stock_history(filepath='utils/datasets/stocks_history_target.h5')
+    if args['train'] == 'True':
+        TRAIN = True
+    else:
+        TRAIN = False
+
+    if args['test'] == 'True':
+        TEST = True
+    else:
+        TEST = False
+
+    #data dimensions: ticker:price date:open high low close volume
+    # history, tickers = read_stock_history(filepath='utils/datasets/stocks_history_target.h5')
+    history, tickers = read_stock_history(filepath='c:/data/equity/price/target_prices.h5')
+    if DEBUG:
+        print("all data before slicing=", history)
+    print("all data's shape={}".format(history.shape))
     history = history[:, :, :4]
-    target_stocks = abbreviation
-    num_training_time = 1095
+    if DEBUG:
+        print("data=", history[0], "\nshape=", history.shape, "\n stocks=", tickers)
+        print("all data=", history)
+    target_stocks = tickers
+    print("stocks in scope={}".format(tickers))
+    #the set of prices at the begining for training, the rest for validation, 1825 in total for this data set
+    # num_training_time = history.shape[1] #2095
+    num_training_time = 3000
+    if TEST:
+        num_training_time = history.shape[1]
+
     window_length = int(args['window_length'])
     nb_classes = len(target_stocks) + 1
 
     # get target history
     target_history = np.empty(shape=(len(target_stocks), num_training_time, history.shape[2]))
     for i, stock in enumerate(target_stocks):
-        target_history[i] = history[abbreviation.index(stock), :num_training_time, :]
+        target_history[i] = history[tickers.index(stock), :num_training_time, :]
+
+    #last data point - for prediction
+    last_history = np.empty(shape=(len(target_stocks), window_length+1, history.shape[2]))
+    for i, stock in enumerate(target_stocks):
+        last_history[i] = history[tickers.index(stock), -window_length-1:, :]
 
     # setup environment
     env = PortfolioEnv(target_history, target_stocks, steps=1000, window_length=window_length)
 
+    if DEBUG:
+        print('target_history shape=', target_history.shape)
+
     action_dim = [nb_classes]
     state_dim = [nb_classes, window_length]
-    batch_size = 64
+    batch_size = 64 #TODO this should be from the config
+    if args['obs'] == 'True':
+        NORM_FUNC = obs_normalizer
+        state_dim += [1]
+    else:
+        NORM_FUNC = default_normalizer
+        state_dim += [4]
+
     action_bound = 1.
     tau = 1e-3
     assert args['predictor_type'] in ['cnn', 'lstm'], 'Predictor must be either cnn or lstm'
@@ -301,8 +402,17 @@ if __name__ == '__main__':
         critic = StockCritic(sess=sess, state_dim=state_dim, action_dim=action_dim, tau=1e-3,
                              learning_rate=1e-3, num_actor_vars=actor.get_num_trainable_vars(),
                              predictor_type=predictor_type, use_batch_norm=use_batch_norm)
-        ddpg_model = DDPG(env, sess, actor, critic, actor_noise, obs_normalizer=obs_normalizer,
-                          config_file='config/stock.json', model_save_path=model_save_path,
-                          summary_path=summary_path)
-        ddpg_model.initialize(load_weights=False)
-        ddpg_model.train()
+
+        if TRAIN:
+            ddpg_model = DDPG(env, sess, actor, critic, actor_noise, obs_normalizer=NORM_FUNC,
+                              config_file='config/stock.json', model_save_path=model_save_path,
+                              summary_path=summary_path)
+            ddpg_model.initialize(load_weights=False)
+            ddpg_model.train(debug=DEBUG)
+        elif TEST:
+            env = PortfolioEnv(target_history, target_stocks, steps=(num_training_time - window_length - 2),
+                               window_length=window_length)
+            test_model(env, _load_model(norm_func=NORM_FUNC))
+        else:
+            # for prediction
+            predict_next_day(env, sess, actor, critic, actor_noise, norm_func=NORM_FUNC)

@@ -86,30 +86,33 @@ class DataGenerator(object):
 
         # get data for this episode, each episode might be different.
         if self.start_date is None:
+            print("data shape={}, steps={}".format(self._data.shape, self.steps))
             self.idx = np.random.randint(
                 low=self.window_length, high=self._data.shape[1] - self.steps)
         else:
             # compute index corresponding to start_date for repeatable sequence
-            self.idx = date_to_index(self.start_date) - self.start_idx
-            assert self.idx >= self.window_length and self.idx <= self._data.shape[1] - self.steps, \
-                'Invalid start date, must be window_length day after start date and simulation steps day before end date'
+            # self.idx = date_to_index(self.start_date) - self.start_idx
+            self.idx = self.window_length + 1
+            print("should not be here when train, this is only for prediction#########################")
+            # assert self.idx >= self.window_length and self.idx <= self._data.shape[1] - self.steps, \
+            #     'Invalid start date, must be window_length day after start date and simulation steps day before end date'
         # print('Start date: {}'.format(index_to_date(self.idx)))
         data = self._data[:, self.idx - self.window_length:self.idx + self.steps + 1, :4]
         # apply augmentation?
         self.data = data
         return self.data[:, self.step:self.step + self.window_length, :].copy(), \
-               self.data[:, self.step + self.window_length:self.step + self.window_length + 1, :].copy()
-
+               self.data[:, self.step + self.window_length:self.step + self.window_length + 1,
+               :].copy() if self.start_date is None else None
 
 class PortfolioSim(object):
     """
     Portfolio management sim.
     Params:
-    - cost e.g. 0.0025 is max in Poliniex
+    - cost e.g. 0.0025 is max in Poliniex, default to
     Based of [Jiang 2017](https://arxiv.org/abs/1706.10059)
     """
 
-    def __init__(self, asset_names=list(), steps=730, trading_cost=0.0025, time_cost=0.0):
+    def __init__(self, asset_names=list(), steps=730, trading_cost=0.0, time_cost=0.0):
         self.asset_names = asset_names
         self.cost = trading_cost
         self.time_cost = time_cost
@@ -269,6 +272,7 @@ class PortfolioEnv(gym.Env):
 
         self.infos.append(info)
 
+        # print("after step, observation shape={}".format(observation.shape))
         return observation, reward, done1 or done2, info
     
     def reset(self):
@@ -285,6 +289,14 @@ class PortfolioEnv(gym.Env):
         info = {}
         info['next_obs'] = ground_truth_obs
         return observation, info
+
+    def get_last_observation(self):
+        """Get the last observration for prediction"""
+        self.sim.reset()
+        observation, ground_truth_obs = self.src.reset()
+        cash_observation = np.ones((1, self.window_length, observation.shape[2]))
+        observation = np.concatenate((cash_observation, observation), axis=0)
+        return observation
 
     def _render(self, mode='human', close=False):
         if close:
@@ -306,6 +318,7 @@ class PortfolioEnv(gym.Env):
         sharpe_ratio = sharpe(df_info.rate_of_return)
         title = 'max_drawdown={: 2.2%} sharpe_ratio={: 2.4f}'.format(mdd, sharpe_ratio)
         df_info[["portfolio_value", "market_value"]].plot(title=title, fig=plt.gcf(), rot=30)
+        plt.show()
 
 
 class MultiActionPortfolioEnv(PortfolioEnv):
